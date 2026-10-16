@@ -16,10 +16,10 @@ flake-utils.lib.eachSystem systems (
   system:
   let
     pkgs = import nixpkgs { inherit system; };
-    appVersion = "26.901.41123";
+    appVersion = "26.924.22138";
     codexZip = pkgs.fetchurl {
       url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-${appVersion}.zip";
-      hash = "sha256-8Nb8q26xxmrE+FhbxbVpJrLYdwDHt8wRRCnntUAZP9Y=";
+      hash = "sha256-fPlWmxFqMq9hpqtOmXlGZ3S23I6dvPcCZFlqGuLf1X0=";
     };
     codex = self.packages.${system}.codex;
   in
@@ -91,7 +91,7 @@ flake-utils.lib.eachSystem systems (
         default = pkgs.buildNpmPackage {
           HOSTED_CODEX_APP_ZIP = codexZip;
 
-          pname = "codex-web";
+          pname = "codex-anywhere";
           version = "1.0.0";
           src = ./.;
 
@@ -131,9 +131,9 @@ flake-utils.lib.eachSystem systems (
           '';
 
           postInstall = ''
-            mv $out/lib/node_modules/codex-web/scratch/asar/{asar_,}node_modules
+            mv $out/lib/node_modules/codex-anywhere/scratch/asar/{asar_,}node_modules
 
-            addon="$out/lib/node_modules/codex-web/node_modules/better-sqlite3"
+            addon="$out/lib/node_modules/codex-anywhere/node_modules/better-sqlite3"
             rm -rf "$addon/build"
             ln -s ${betterSqlite3Native}/build "$addon/build"
           '';

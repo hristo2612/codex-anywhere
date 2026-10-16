@@ -1,17 +1,10 @@
---- a/webview/assets/app-primary-6b28e06666ff.js
-+++ b/webview/assets/app-primary-6b28e06666ff.js
-@@ -85235,13 +85235,21 @@
-               restoreRichLinks: !C,
-             })
-           : Jl({ schema: y, text: e }));
--  let j = new tDe(null, {
--      attributes: {
--        "aria-multiline": `true`,
--        dir: `auto`,
--        role: `textbox`,
--        spellcheck: `true`,
--      },
-+  let inputModeDisabled = !1,
+--- a/webview/assets/app-initial-d817715f10a0.js
++++ b/webview/assets/app-initial-d817715f10a0.js
+@@ -403452,13 +403452,21 @@
+   }
+   I != null && u != null && !f && (I = VHn(I, u, e ?? void 0));
+   let L = u == null ? null : xdo(f ? u : null, (e) => ddo(v, e)),
++    inputModeDisabled = !1,
 +    getAttributes = () => ({
 +      "aria-multiline": `true`,
 +      dir: `auto`,
@@ -22,20 +15,25 @@
 +    setPointerInputMode = (e) => {
 +      inputModeDisabled !== e &&
 +        ((inputModeDisabled = e),
-+        j.isDestroyed || j.setProps({ attributes: getAttributes }));
++        R.isDestroyed || R.setProps({ attributes: getAttributes }));
 +    },
-+    j = new tDe(null, {
+     R = new ile(null, {
+-      attributes: {
+-        "aria-multiline": `true`,
+-        dir: `auto`,
+-        role: `textbox`,
+-        spellcheck: `true`,
+-      },
 +      attributes: getAttributes,
+       transformPastedText: k.transformPastedText,
        transformPastedHTML(e) {
-         return e.length > IH ? ` ` : jde(nfe(e).body.innerHTML) || ` `;
-       },
-@@ -85368,6 +85376,15 @@
-           b.dispatchEvent(new CustomEvent(dH, { detail: e.docChanged })));
+         return (
+@@ -403617,7 +403625,13 @@
        },
        handleDOMEvents: {
-+        mousedown(e, t) {
-+          return (setPointerInputMode(!0), !1);
-+        },
+         keydown: (e, t) => k.handleKeyEvent(t),
+-        mousedown: (e, t) => k.handleMouseDown(t),
++        mousedown: (e, t) => (setPointerInputMode(!0), k.handleMouseDown(t)),
 +        touchstart(e, t) {
 +          return (setPointerInputMode(!0), !1);
 +        },
@@ -43,5 +41,5 @@
 +          return (setPointerInputMode(!1), !1);
 +        },
          keyup(e, t) {
+           k.handleKeyEvent(t);
            let { $from: n, empty: r } = e.state.selection;
-           return (

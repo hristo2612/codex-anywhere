@@ -10,6 +10,7 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
+import { FrameBases, resolveBigFrame, type BigFrameMeta } from "./frame-delta";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -48,6 +49,8 @@ type RendererToMainMessage =
     };
 
 type MainToRendererMessage =
+  | { type: "codex-web-open-window"; windowId: number; path: string }
+  | { type: "codex-web-close-window"; windowId: number }
   | {
       type: "ipc-main-event";
       channel: string;
@@ -112,12 +115,27 @@ type ElectronShimState = {
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
   onMemoryNavigationChanged?: (navigation: MemoryNavigationChange) => void;
+  // Origin of our own copy of the MCP App sandbox shell (see
+  // src/server/main.ts startMcpSandboxServer). Patched renderer code renders
+  // MCP App widgets in an <iframe> on this origin instead of an Electron
+  // <webview> on codex-sandbox://*.web-sandbox.oaiusercontent.com.
+  mcpAppSandboxOrigin?: string;
   overrideAdapter?: {
     getGateOverride?: (
       evaluation: StatsigGateEvaluation,
       ...args: unknown[]
     ) => StatsigGateEvaluation | null;
+    getLayerOverride?: (
+      layer: StatsigLayerEvaluation,
+      ...args: unknown[]
+    ) => StatsigLayerEvaluation | null;
   };
+};
+
+type StatsigLayerEvaluation = {
+  name: string;
+  __value?: Record<string, unknown>;
+  [key: string]: unknown;
 };
 
 declare global {
@@ -130,7 +148,6 @@ declare const __CODEX_APP_VERSION__: string;
 
 let requestCounter = 0;
 let socket: WebSocket | null = null;
-let needsReload = false;
 let reconnectTimeoutId: number | null = null;
 const outboundQueue: RendererToMainMessage[] = [];
 const pendingInvokes = new Map<
@@ -166,7 +183,131 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
   }
 }
 
+// Phone layout for the app shell's navigation rail (26.924+): with the sidebar
+// closed the rail strip is hidden and the chat goes edge to edge; opening the
+// sidebar shows rail + list full screen (see webview-mobile.patch).
+const mobileShellStyle = document.createElement("style");
+mobileShellStyle.dataset.codexWeb = "mobile-shell";
+mobileShellStyle.textContent = `
+@media (max-width: 767.98px) {
+  [data-app-shell-frame][data-app-shell-sidebar-open="false"] {
+    --app-shell-navigation-rail-width: 0px !important;
+  }
+  [data-app-shell-frame][data-app-shell-sidebar-open="false"] aside.app-shell-left-panel {
+    display: none !important;
+  }
+  [data-app-shell-frame],
+  [data-app-shell-frame] > * {
+    padding-right: 0 !important;
+    padding-bottom: 0 !important;
+  }
+  [data-app-shell-frame] main[data-app-shell-main-surface] {
+    border-radius: 0 !important;
+  }
+  /* No home-indicator band under the chat: the composer sits on the bottom
+     edge (webview-mobile.patch pads #root by the safe areas). An open
+     sidebar keeps the padding for its bottom controls. */
+  #root:has([data-app-shell-frame][data-app-shell-sidebar-open="false"]) {
+    padding-bottom: 0 !important;
+  }
+  /* The sidebar's sortable rows (threads, projects, rail) are touch-none for
+     drag and drop, so a swipe starting on a row never scrolled the list.
+     Touch never starts a drag on phones (webview-mobile-touch-no-drag.patch). */
+  aside.app-shell-left-panel .touch-none {
+    touch-action: manipulation !important;
+  }
+}`;
+document.head.append(mobileShellStyle);
+
+// On iPhones a menu opened by a tap (e.g. the composer's "This computer"
+// picker) closed again at once: the layer took a follow-up event of the same
+// tap for an interaction outside it. Emulated WebKit/Chrome don't reproduce
+// it, so ignore outside-dismissals for a moment after a touch opens a popup.
+const POPUP_TRIGGER = '[aria-haspopup="menu"],[aria-haspopup="listbox"],[aria-haspopup="dialog"],[aria-haspopup="true"]';
+const TOUCH_OPEN_GRACE_MS = 600;
+let popupTouchAt = -Infinity;
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (event.pointerType !== "touch") return;
+    if (!(event.target instanceof Element) || !event.target.closest(POPUP_TRIGGER)) return;
+    popupTouchAt = performance.now();
+  },
+  true,
+);
+for (const type of ["dismissableLayer.pointerDownOutside", "dismissableLayer.focusOutside"]) {
+  window.addEventListener(
+    type,
+    (event) => {
+      if (performance.now() - popupTouchAt < TOUCH_OPEN_GRACE_MS) event.preventDefault();
+    },
+    true,
+  );
+}
+
+// Instant paint (a stored picture of the last screen) was removed on
+// 2026-09-30: it looked interactive while the app was still booting. Drop the
+// snapshots it saved; they can hold chat content.
+try {
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("codex-web:instant-paint:")) localStorage.removeItem(key);
+  }
+} catch {}
+
+// The app's secondary windows (realtime voice overlay) run hidden in this tab
+// so their mic capture and audio playback use this device.
+const hostedWindowFrames = new Map<number, HTMLIFrameElement>();
+
+// The app opens its overlay window at startup, but booting a second app view
+// in an iframe doubles startup work on phones. Only host it once voice is used.
+const pendingHostedWindows = new Map<number, string>();
+let voiceRequested = false;
+
+function requestHostedWindow(windowId: number, path: string): void {
+  if (voiceRequested) {
+    openHostedWindow(windowId, path);
+    return;
+  }
+  pendingHostedWindows.set(windowId, path);
+}
+
+function noteOutgoingFrame(frame: string): void {
+  if (voiceRequested || !frame.includes('"requestRealtimeStart"')) return;
+  voiceRequested = true;
+  for (const [windowId, path] of pendingHostedWindows) openHostedWindow(windowId, path);
+  pendingHostedWindows.clear();
+}
+
+function openHostedWindow(windowId: number, path: string): void {
+  if (hostedWindowFrames.has(windowId)) return;
+  const frame = document.createElement("iframe");
+  frame.src = path;
+  frame.allow = "microphone; autoplay; camera; clipboard-write";
+  frame.setAttribute("aria-hidden", "true");
+  frame.tabIndex = -1;
+  frame.style.cssText =
+    "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;pointer-events:none;";
+  hostedWindowFrames.set(windowId, frame);
+  document.body.append(frame);
+}
+
+function closeHostedWindow(windowId: number): void {
+  pendingHostedWindows.delete(windowId);
+  hostedWindowFrames.get(windowId)?.remove();
+  hostedWindowFrames.delete(windowId);
+}
+
 function handleIncomingMessage(message: MainToRendererMessage): void {
+  if (message.type === "codex-web-open-window") {
+    requestHostedWindow(message.windowId, message.path);
+    return;
+  }
+
+  if (message.type === "codex-web-close-window") {
+    closeHostedWindow(message.windowId);
+    return;
+  }
+
   if (message.type === "ipc-main-event") {
     emitRendererEvent(message.channel, message.args);
     return;
@@ -212,23 +353,251 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
   }
 }
 
+// Resumable transport. Phones drop the WebSocket whenever the tab is
+// backgrounded; the server keeps this app view's session alive, so we reconnect
+// with its id and replay unacknowledged frames instead of reloading the page.
+let sessionId: string | null = null;
+let handshakeDone = false;
+let outSeq = 0;
+// Always the whole frame: replays after a reconnect never use deltas.
+const unackedOut: { seq: number; frame: string }[] = [];
+const frameBases = new FrameBases();
+
+// Identifies this view so the server keeps one backend view per tab (per
+// app, in the iOS app's single web view) instead of piling up views from old
+// page loads. Per tab, not per browser: sibling tabs must not evict each other.
+function viewClientId(): string {
+  const inPhoneApp = Boolean(
+    (window as { webkit?: { messageHandlers?: Record<string, unknown> } }).webkit?.messageHandlers?.codexAnywhereRTC,
+  );
+  const key = "codexWebClientId";
+  try {
+    const storage = inPhoneApp ? localStorage : sessionStorage;
+    const existing = storage.getItem(key);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    storage.setItem(key, created);
+    return created;
+  } catch {
+    return "";
+  }
+}
+const clientId = viewClientId();
+let lastServerSeq = 0;
+let ackTimeoutId: number | null = null;
+let reconnectAttempts = 0;
+let pingTimeoutId: number | null = null;
+
 function flushOutboundQueue(): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !handshakeDone) {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
-    socket.send(JSON.stringify(message));
+    const seq = ++outSeq;
+    const messageJson = JSON.stringify(message);
+    const frame = `{"s":${seq},"m":${messageJson}}`;
+    unackedOut.push({ seq, frame });
+    noteOutgoingFrame(frame);
+    socket.send(frameBases.encodeOutgoing(seq, messageJson) ?? frame);
   }
+}
+
+function trimUnackedOut(ack: number): void {
+  let drop = 0;
+  while (drop < unackedOut.length && unackedOut[drop]!.seq <= ack) drop += 1;
+  if (drop > 0) unackedOut.splice(0, drop);
+}
+
+function scheduleAck(): void {
+  if (ackTimeoutId !== null) return;
+  ackTimeoutId = window.setTimeout(() => {
+    ackTimeoutId = null;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ ack: lastServerSeq }));
+    }
+  }, 250);
 }
 
 function scheduleReconnect(): void {
   if (reconnectTimeoutId !== null) {
     return;
   }
+  const delay = Math.min(RECONNECT_DELAY_MS, 100 * 2 ** reconnectAttempts);
+  reconnectAttempts += 1;
   reconnectTimeoutId = window.setTimeout(() => {
     reconnectTimeoutId = null;
     ensureSocket();
-  }, RECONNECT_DELAY_MS);
+  }, delay);
+}
+
+function reconnectNow(): void {
+  if (reconnectTimeoutId !== null) {
+    window.clearTimeout(reconnectTimeoutId);
+    reconnectTimeoutId = null;
+  }
+  reconnectAttempts = 0;
+  ensureSocket();
+}
+
+// Coming back to a backgrounded tab: the socket may look open but be dead.
+// After a real absence (phone app suspended, tab in the background) it almost
+// always is, so reconnect right away instead of waiting out a ping timeout.
+let hiddenSince: number | null = null;
+let lastReceiveAt = 0;
+const LONG_ABSENCE_MS = 5_000;
+function checkConnection(): void {
+  if (document.visibilityState !== "visible") {
+    hiddenSince ??= Date.now();
+    return;
+  }
+  const wasAwayLong = hiddenSince !== null && Date.now() - hiddenSince > LONG_ABSENCE_MS;
+  hiddenSince = null;
+  if (wasAwayLong && socket && socket.readyState === WebSocket.OPEN && handshakeDone) {
+    const stale = socket;
+    socket = null;
+    handshakeDone = false;
+    if (pingTimeoutId !== null) {
+      window.clearTimeout(pingTimeoutId);
+      pingTimeoutId = null;
+    }
+    stale.close();
+    reconnectNow();
+    return;
+  }
+  if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+    reconnectNow();
+    return;
+  }
+  if (socket.readyState !== WebSocket.OPEN || pingTimeoutId !== null) return;
+  const probe = socket;
+  const sentAt = Date.now();
+  probe.send(JSON.stringify({ ping: sentAt }));
+  const awaitPong = (buffered: number) => {
+    pingTimeoutId = window.setTimeout(() => {
+      pingTimeoutId = null;
+      if (socket !== probe) return;
+      // Traffic since the ping (e.g. chunks of a big frame the pong is queued
+      // behind) means it is busy, not dead: keep waiting for the pong, but not
+      // forever, in case only our direction died.
+      if (lastReceiveAt >= sentAt && Date.now() - sentAt < 30_000) {
+        awaitPong(probe.bufferedAmount + 1);
+        return;
+      }
+      // Still draining a big upload of ours: slow, not dead.
+      if (probe.bufferedAmount > 0 && probe.bufferedAmount < buffered) {
+        awaitPong(probe.bufferedAmount);
+        return;
+      }
+      probe.close();
+      // Closing a dead socket may not fire "close" promptly; move on now.
+      socket = null;
+      handshakeDone = false;
+      reconnectNow();
+    }, 3_000);
+  };
+  awaitPong(probe.bufferedAmount + 1);
+}
+
+// Network switches (Wi-Fi <-> cellular) can leave the socket half-open with no
+// close event, so probe it regularly while the page is visible.
+window.setInterval(checkConnection, 5_000);
+document.addEventListener("visibilitychange", checkConnection);
+window.addEventListener("pageshow", checkConnection);
+window.addEventListener("online", checkConnection);
+window.addEventListener("focus", checkConnection);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") frameBases.flush();
+});
+window.addEventListener("pagehide", (event) => {
+  frameBases.flush();
+  // A real unload (close, reload, navigate) frees the server session now.
+  if (!event.persisted && socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ bye: true }));
+  }
+});
+
+function declareFrameBases(): void {
+  if (!frameBases.enabled) return;
+  const current = socket;
+  void frameBases.loaded.then(() => {
+    if (socket !== current || current?.readyState !== WebSocket.OPEN) return;
+    current.send(JSON.stringify({ bases: frameBases.declared(), at: lastServerSeq }));
+  });
+}
+
+type IncomingFrame = {
+  hello?: { session?: string; resumed?: boolean; resumeFailed?: boolean; lastClientSeq?: number };
+  s?: number;
+  m?: MainToRendererMessage;
+  b?: BigFrameMeta;
+  d?: unknown;
+  p?: number[];
+  ack?: number;
+  pong?: unknown;
+  basesOk?: unknown;
+};
+
+function handleFrame(data: IncomingFrame, raw: string): void {
+  if (data.hello) {
+    if (data.hello.resumeFailed || (sessionId !== null && !data.hello.resumed)) {
+      // The server no longer has this app view; only a fresh one can recover.
+      window.location.reload();
+      return;
+    }
+    sessionId = data.hello.session ?? sessionId;
+    trimUnackedOut(data.hello.lastClientSeq ?? 0);
+    handshakeDone = true;
+    reconnectAttempts = 0;
+    for (const { frame } of unackedOut) socket?.send(frame);
+    flushOutboundQueue();
+    if (!data.hello.resumed) declareFrameBases();
+    return;
+  }
+  if (data.basesOk !== undefined) {
+    frameBases.acceptServerKnown(data.basesOk);
+    return;
+  }
+  if (typeof data.ack === "number") {
+    trimUnackedOut(data.ack);
+    return;
+  }
+  if (data.pong !== undefined) {
+    if (pingTimeoutId !== null) {
+      window.clearTimeout(pingTimeoutId);
+      pingTimeoutId = null;
+    }
+    return;
+  }
+  if (typeof data.s !== "number") return;
+  if (data.s <= lastServerSeq) return; // replayed after a resume
+  let message = data.m;
+  if (data.b) {
+    try {
+      message = resolveBigFrame(frameBases, raw, data as Parameters<typeof resolveBigFrame>[2]) as MainToRendererMessage;
+    } catch (error) {
+      FrameBases.recoverFromFailure(error);
+      return;
+    }
+  }
+  if (message == null) return;
+  lastServerSeq = data.s;
+  scheduleAck();
+  handleIncomingMessage(message);
+}
+
+// The server refuses the socket handshake (no close code reaches the page)
+// once this device is unpaired, e.g. after a server update added the device
+// gate or the cookie was cleared. Ask it directly, and reload into the
+// pairing page if so.
+let lastPairingCheckAt = 0;
+function checkStillPaired(): void {
+  if (Date.now() - lastPairingCheckAt < 10_000) return;
+  lastPairingCheckAt = Date.now();
+  void fetch("/__auth/status", { cache: "no-store", credentials: "same-origin" })
+    .then((response) => {
+      if (response.status === 401) window.location.reload();
+    })
+    .catch(() => {});
 }
 
 function ensureSocket(): void {
@@ -240,22 +609,48 @@ function ensureSocket(): void {
     return;
   }
 
-  socket = new WebSocket(
-    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
+  const params = new URLSearchParams();
+  const hostedWindowId = new URLSearchParams(window.location.search).get(
+    "codexWebWindow",
   );
-  socket.addEventListener("open", () => {
-    // App-host RPC transfers MessagePorts once at startup. A new connection needs
-    // a fresh app view; replaying requests against the closed ports cannot recover it.
-    if (needsReload) {
-      window.location.reload();
-      return;
-    }
-    flushOutboundQueue();
+  if (hostedWindowId) params.set("attachWindow", hostedWindowId);
+  if (sessionId) {
+    params.set("session", sessionId);
+    params.set("ack", String(lastServerSeq));
+  }
+  if (clientId && !hostedWindowId) params.set("client", clientId);
+  params.set("ck", "1");
+  // Big-frame deltas (see frame-delta.ts); older pages never ask, so never get them.
+  if (frameBases.enabled) params.set("fd", "1");
+  const query = params.toString();
+  handshakeDone = false;
+  const current = new WebSocket(
+    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${query ? `?${query}` : ""}`,
+  );
+  socket = current;
+  let opened = false;
+  current.addEventListener("open", () => {
+    opened = true;
   });
-  socket.addEventListener("message", (event) => {
+  // Chunked big frames from the server (see sendRaw in main.ts); a reconnect
+  // gets the whole frame replayed, so partial ones die with their socket.
+  const chunks = new Map<string, string[]>();
+  current.addEventListener("message", (event) => {
+    if (socket !== current) return;
+    lastReceiveAt = Date.now();
     try {
-      const message = JSON.parse(String(event.data)) as MainToRendererMessage;
-      handleIncomingMessage(message);
+      let raw = String(event.data);
+      if (raw.charCodeAt(0) === 1) {
+        const newline = raw.indexOf("\n");
+        const [id = "", index, total] = raw.slice(1, newline).split(" ");
+        const parts = chunks.get(id) ?? [];
+        parts[Number(index)] = raw.slice(newline + 1);
+        chunks.set(id, parts);
+        if (parts.filter((part) => part !== undefined).length < Number(total)) return;
+        chunks.delete(id);
+        raw = parts.join("");
+      }
+      handleFrame(JSON.parse(raw), raw);
     } catch (error) {
       console.error(
         "[electron-stub] failed to parse IPC bridge message",
@@ -263,23 +658,26 @@ function ensureSocket(): void {
       );
     }
   });
-  socket.addEventListener("close", () => {
-    needsReload = true;
-    const error = new Error("Connection to Codex was lost");
-    for (const pending of pendingInvokes.values()) pending.reject(error);
-    pendingInvokes.clear();
-    for (const pending of pendingDirectoryEntries.values())
-      pending.reject(error);
-    pendingDirectoryEntries.clear();
-    outboundQueue.length = 0;
-    for (const port of messagePorts.values()) {
-      port.close();
+  current.addEventListener("close", (event) => {
+    // 4000: the server could not decode one of our deltas.
+    if (event.code === 4000) frameBases.forgetServerKnown();
+    // 4401: this device was revoked; the reload shows the pairing page.
+    if (event.code === 4401) {
+      window.location.reload();
+      return;
     }
-    messagePorts.clear();
-    scheduleReconnect();
+    if (!opened) checkStillPaired();
+    if (socket !== current) return;
+    handshakeDone = false;
+    if (pingTimeoutId !== null) {
+      window.clearTimeout(pingTimeoutId);
+      pingTimeoutId = null;
+    }
+    if (document.visibilityState === "visible") scheduleReconnect();
   });
-  socket.addEventListener("error", () => {
-    scheduleReconnect();
+  current.addEventListener("error", () => {
+    if (socket !== current) return;
+    if (document.visibilityState === "visible") scheduleReconnect();
   });
 }
 
@@ -318,7 +716,10 @@ function shouldCloseSidebarForMemoryPath(path: string): boolean {
     path === "/" ||
     path.startsWith("/local/") ||
     path === "/skills" ||
-    path === "/automations"
+    path === "/automations" ||
+    path === "/plugins" ||
+    path.startsWith("/plugins/") ||
+    path.startsWith("/mcp-app/")
   );
 }
 
@@ -334,6 +735,14 @@ function isUnhandledAddWorkspaceRootOptionMessage(value: unknown): value is {
     isRecord(value) &&
     value.type === "electron-add-new-workspace-root-option" &&
     typeof value.root !== "string"
+  );
+}
+
+function isPickWorkspaceRootOptionMessage(value: unknown): value is {
+  type: "electron-pick-workspace-root-option";
+} {
+  return (
+    isRecord(value) && value.type === "electron-pick-workspace-root-option"
   );
 }
 
@@ -364,7 +773,7 @@ function requestWorkspaceDirectoryEntries(
 }
 
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
-const mobileMediaQuery = matchMedia("(max-width: 768px)");
+const mobileMediaQuery = matchMedia("(max-width: 767.98px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
@@ -378,6 +787,17 @@ Object.assign(globalThis, {
     },
   },
 });
+
+// Plugin pages run someone else's code in an iframe of this page. The iOS
+// app's native handlers (microphone, logs) answered every frame before build
+// 2; such a build has its handlers but not the main-frame marker, so pages
+// stay off there (they render blank) until the app is updated. Browsers and
+// the home-screen web app have no native handlers and get pages.
+const pluginPagesAllowed = (() => {
+  const handlers = (window as { webkit?: { messageHandlers?: Record<string, unknown> } }).webkit?.messageHandlers;
+  const nativeApp = handlers != null && handlers.codexAnywhereRTC != null;
+  return !nativeApp || (window as { __codexAnywhereFrameGuard?: number }).__codexAnywhereFrameGuard === 1;
+})();
 
 electronShim.overrideAdapter = {
   getGateOverride(evaluation) {
@@ -398,7 +818,26 @@ electronShim.overrideAdapter = {
 
     return null;
   },
+  getLayerOverride(layer) {
+    if (layer.name === "2138468235" && pluginPagesAllowed) {
+      // MCP Apps inside threads (inline widgets, thread panels). The global
+      // sidebar page renders without it. Also forwarded to the app-server as
+      // the `enable_mcp_apps` feature.
+      return { ...layer, __value: { ...(layer.__value ?? {}), enable_mcp_apps: true } };
+    }
+    return null;
+  },
 };
+
+// The sandbox shell is served on the next port of the same host, a separate
+// origin from the app (an iframe on the app's own origin could reach the
+// app's DOM). Behind `tailscale serve`, serve that port too.
+if (pluginPagesAllowed) {
+  electronShim.mcpAppSandboxOrigin = (() => {
+    const port = Number(window.location.port || (window.location.protocol === "https:" ? 443 : 80));
+    return `${window.location.protocol}//${window.location.hostname}:${port + 1}`;
+  })();
+}
 
 const initialRoute = mapBrowserPathToInitialRoute(
   window.location.pathname,
@@ -458,6 +897,21 @@ export const ipcRenderer = {
           }
 
           return invokeMain(channel, [{ ...args[0], root }]);
+        });
+      }
+
+      // The "Create project" dialog asks main for a native folder picker and
+      // waits for a workspace-root-option-picked message; answer it locally.
+      if (isPickWorkspaceRootOptionMessage(args[0])) {
+        return openSelectWorkspaceRootDialog({
+          listDirectory: requestWorkspaceDirectoryEntries,
+        }).then((root) => {
+          if (root) {
+            emitRendererEvent("codex_desktop:message-for-view", [
+              { type: "workspace-root-option-picked", root },
+            ]);
+          }
+          return undefined;
         });
       }
     }

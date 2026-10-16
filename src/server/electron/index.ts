@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 type StubFunction = (...args: unknown[]) => unknown;
 type StubListener = (...args: unknown[]) => void;
 type StubMessagePort = {
@@ -56,6 +61,11 @@ type IpcMainBridgeState = {
     args: unknown[],
     windowId: number,
   ) => void;
+  // Secondary app windows (e.g. the realtime voice overlay) have no browser
+  // tab of their own; main.ts hosts them as hidden iframes in an open tab.
+  onWindowLoadURL?: (window: BrowserWindow, url: string) => void;
+  onWindowDestroyed?: (window: BrowserWindow) => void;
+  getWindowById?: (id: number) => BrowserWindow | null;
 };
 
 function getIpcMainBridgeState(): IpcMainBridgeState {
@@ -68,8 +78,12 @@ function getIpcMainBridgeState(): IpcMainBridgeState {
   return globals.__codexElectronIpcBridge;
 }
 
+// Per-call tracing formats large objects synchronously on the main thread
+// (~0.5 MB per page load), so it is opt-in.
+const debugStubCalls = Boolean(process.env.CODEX_WEB_DEBUG);
+
 function log(method: string, args: unknown[]): void {
-  console.log(`[electron-main-stub] ${method}`, args);
+  if (debugStubCalls) console.log(`[electron-main-stub] ${method}`, args);
 }
 
 function createDeepStub(pathLabel: string): StubFunction {
@@ -94,6 +108,12 @@ function createDeepStub(pathLabel: string): StubFunction {
 
       if (prop === Symbol.toPrimitive) {
         return () => pathLabel;
+      }
+
+      // Callers may do `Reflect.apply(stub.fn.bind(stub), ...)`; keep the real
+      // Function.prototype helpers so the bound call reaches the apply trap.
+      if (prop === "bind" || prop === "call" || prop === "apply") {
+        return Reflect.get(Function.prototype, prop);
       }
 
       return createDeepStub(`${pathLabel}.${String(prop)}`);
@@ -395,6 +415,10 @@ const app = new Proxy(appBase as Record<string, unknown>, {
 }) as typeof appBase;
 
 class BrowserWindow {
+  static isAlwaysOnTopSupported(): boolean {
+    return false;
+  }
+
   static isInputShapeSupported(): boolean {
     return false;
   }
@@ -447,6 +471,7 @@ class BrowserWindow {
         loadURL: async (url: string): Promise<void> => {
           log(`BrowserWindow#${this.id}.webContents.loadURL`, [url]);
           (this.webContents.mainFrame as { url: string }).url = url;
+          getIpcMainBridgeState().onWindowLoadURL?.(this, url);
         },
         loadFile: async (...loadFileArgs: unknown[]): Promise<void> => {
           log(`BrowserWindow#${this.id}.webContents.loadFile`, loadFileArgs);
@@ -554,6 +579,7 @@ class BrowserWindow {
   async loadURL(url: string): Promise<void> {
     log(`BrowserWindow#${this.id}.loadURL`, [url]);
     (this.webContents.mainFrame as { url: string }).url = url;
+    getIpcMainBridgeState().onWindowLoadURL?.(this, url);
   }
 
   close(): void {
@@ -575,6 +601,7 @@ class BrowserWindow {
     if (BrowserWindow.focusedWindow === this) {
       BrowserWindow.focusedWindow = null;
     }
+    getIpcMainBridgeState().onWindowDestroyed?.(this);
     this.emitter.emit("closed");
   }
 
@@ -624,6 +651,41 @@ class BrowserWindow {
       width: nextBounds.width ?? this.bounds.width,
       height: nextBounds.height ?? this.bounds.height,
     };
+  }
+
+  // No frame in the browser, so content bounds are the window bounds. The
+  // voice overlay positions itself with these; a missing one returned
+  // undefined and broke voice start ("reading 'x'").
+  getContentBounds(): { height: number; width: number; x: number; y: number } {
+    return this.getBounds();
+  }
+
+  setContentBounds(nextBounds: { height?: number; width?: number; x?: number; y?: number }): void {
+    this.setBounds(nextBounds);
+  }
+
+  getPosition(): [number, number] {
+    return [this.bounds.x, this.bounds.y];
+  }
+
+  setPosition(x: number, y: number): void {
+    this.setBounds({ x, y });
+  }
+
+  getSize(): [number, number] {
+    return [this.bounds.width, this.bounds.height];
+  }
+
+  setSize(width: number, height: number): void {
+    this.setBounds({ width, height });
+  }
+
+  getContentSize(): [number, number] {
+    return this.getSize();
+  }
+
+  setContentSize(width: number, height: number): void {
+    this.setSize(width, height);
   }
 
   show(): void {
@@ -779,11 +841,145 @@ const crashReporter = {
   },
 };
 
+// Stale-while-revalidate for the read-only chatgpt.com calls every new app
+// view makes in sequence before the composer renders (~0.3-0.5 s each from
+// the host). A cached copy answers at once and a background fetch refreshes it
+// for the next load. Keyed per account (authorization header), 200s only.
+const STARTUP_FETCH_PATTERNS = [
+  /\/backend-api\/wham\/statsig\/bootstrap(\?|$)/,
+  /\/backend-api\/accounts\/check\//,
+  /\/backend-api\/settings\/user(\?|$)/,
+  /\/backend-api\/wham\/(sites\/access|onboarding\/context|usage|tasks\/list)(\?|$)/,
+  /\/backend-api\/celsius\/ws\/user(\?|$)/,
+  /\/backend-api\/(automations|subscriptions|beacons\/home)(\?|$)/,
+];
+type CachedStartupResponse = {
+  status: number;
+  headers: [string, string][];
+  body: ArrayBuffer;
+  at: number;
+};
+const startupFetchCache = new Map<string, CachedStartupResponse>();
+const startupFetchInFlight = new Map<string, Promise<Response>>();
+
+function startupFetchCacheKey(
+  input: unknown,
+  init: RequestInit,
+  headers: Headers,
+): string | null {
+  if (process.env.CODEX_WEB_NO_FETCH_CACHE) return null;
+  if (typeof input !== "string" && !(input instanceof URL)) return null;
+  const url = String(input);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (!STARTUP_FETCH_PATTERNS.some((pattern) => pattern.test(url))) return null;
+  // Only the statsig bootstrap is a POST; its body is per-session noise.
+  if (method !== "GET" && !/statsig\/bootstrap/.test(url)) return null;
+  const account = createHash("sha256")
+    .update(`${headers.get("authorization") ?? ""}|${headers.get("chatgpt-account-id") ?? ""}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${method} ${url} ${account}`;
+}
+
+function responseFromCache(entry: CachedStartupResponse): Response {
+  return new Response(entry.body.slice(0), { status: entry.status, headers: entry.headers });
+}
+
+async function fetchAndCache(key: string, doFetch: () => Promise<Response>): Promise<Response> {
+  const response = await doFetch();
+  if (response.status === 200) {
+    const body = await response.clone().arrayBuffer();
+    startupFetchCache.set(key, {
+      status: response.status,
+      headers: [...response.headers.entries()].filter(
+        ([name]) => !/^(content-encoding|content-length|transfer-encoding|set-cookie)$/i.test(name),
+      ),
+      body,
+      at: Date.now(),
+    });
+  }
+  return response;
+}
+
+async function cachedStartupFetch(key: string, doFetch: () => Promise<Response>): Promise<Response> {
+  const cached = startupFetchCache.get(key);
+  if (cached) {
+    if (Date.now() - cached.at > 5_000 && !startupFetchInFlight.has(key)) {
+      const refresh = fetchAndCache(key, doFetch).finally(() => startupFetchInFlight.delete(key));
+      startupFetchInFlight.set(key, refresh);
+      refresh.catch(() => {});
+    }
+    return responseFromCache(cached);
+  }
+  return fetchAndCache(key, doFetch);
+}
+
+// Statsig writes its maps in a random key order on every fetch, so each new
+// payload (~5 MB, loaded by every app view twice plus once as the renderer's
+// bootstrap) looked brand new to the socket's big-frame deltas. Sorting object
+// keys keeps the meaning (the app only JSON.parses it) and makes consecutive
+// payloads differ by a few KB.
+const STATSIG_BOOTSTRAP_PATTERN = /\/backend-api\/wham\/statsig\/bootstrap(\?|$)/;
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key])]),
+  );
+}
+
+async function canonicalStatsigResponse(response: Response): Promise<Response> {
+  if (response.status !== 200 || process.env.CODEX_WEB_NO_STATSIG_CANON) return response;
+  try {
+    const body = JSON.parse(await response.clone().text()) as Record<string, unknown>;
+    if (typeof body.statsigPayload === "string") {
+      body.statsigPayload = JSON.stringify(sortKeysDeep(JSON.parse(body.statsigPayload)));
+    }
+    const headers = [...response.headers.entries()].filter(
+      ([name]) => !/^(content-encoding|content-length|transfer-encoding)$/i.test(name),
+    );
+    return new Response(JSON.stringify(sortKeysDeep(body)), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch {
+    return response;
+  }
+}
+
+function electronUserAgent(): string {
+  return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Codex/${globalThis.__CODEX_SHIM_VALUES__?.version ?? "0.0.0"} Chrome/152.0.0.0 Electron/41.0.0 Safari/537.36`;
+}
+
 const net = {
+  isOnline(): boolean {
+    return true;
+  },
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
     // log("net.fetch", [input, init]);
     if (typeof globalThis.fetch === "function") {
-      return globalThis.fetch(input as URL | RequestInfo, init);
+      // Electron's net.fetch sends the session user agent; Node's default one
+      // gets a Cloudflare 403 from chatgpt.com (dictation /transcribe, etc.).
+      const headers = new Headers(init?.headers);
+      if (!headers.has("user-agent")) {
+        headers.set("user-agent", electronUserAgent());
+      }
+      const request = { ...init, headers };
+      const isStatsigBootstrap =
+        (typeof input === "string" || input instanceof URL) && STATSIG_BOOTSTRAP_PATTERN.test(String(input));
+      const doFetch = () => {
+        const pending = globalThis.fetch(input as URL | RequestInfo, request);
+        return isStatsigBootstrap ? pending.then(canonicalStatsigResponse) : pending;
+      };
+      const cacheKey = startupFetchCacheKey(input, request, headers);
+      if (cacheKey == null) {
+        return doFetch();
+      }
+      return cachedStartupFetch(cacheKey, doFetch);
     }
     return new Response("", { status: 204 });
   },
@@ -812,6 +1008,7 @@ const net = {
   },
 };
 
+getIpcMainBridgeState().getWindowById = (id) => BrowserWindow.fromId(id);
 const autoUpdater = createEmitterStub("autoUpdater");
 const ipcMain = createIpcMainStub();
 const nativeTheme = {
@@ -821,18 +1018,82 @@ const nativeTheme = {
   shouldUseInvertedColorScheme: false,
   themeSource: "system",
 };
-const nativeImage = {
-  createEmpty(): { isEmpty: () => boolean } {
-    log("nativeImage.createEmpty", []);
-    return {
-      isEmpty: () => true,
-    };
+// Microphone/camera capture happens in the remote browser (phone, laptop), whose
+// own getUserMedia prompt is the real permission gate; the host's TCC state is
+// irrelevant, so report access as granted instead of asking macOS.
+const systemPreferences = {
+  ...createEmitterStub("systemPreferences"),
+  getMediaAccessStatus: (mediaType: string): string => {
+    log("systemPreferences.getMediaAccessStatus", [mediaType]);
+    return "granted";
   },
-  createFromPath(imagePath: string): { isEmpty: () => boolean } {
+  askForMediaAccess: async (mediaType: string): Promise<boolean> => {
+    log("systemPreferences.askForMediaAccess", [mediaType]);
+    return true;
+  },
+};
+// Real enough for the app's icon paths (dock, "open in" editors): a missing
+// resize()/toDataURL() threw inside a startup service and the renderer retried
+// it on a multi-second backoff before first paint.
+const nativeImageCache = new Map<string, Buffer | null>();
+
+function loadImageFile(imagePath: string): Buffer | null {
+  if (nativeImageCache.has(imagePath)) return nativeImageCache.get(imagePath)!;
+  let buffer: Buffer | null = null;
+  try {
+    if (imagePath && existsSync(imagePath)) {
+      if (/\.png$/i.test(imagePath)) {
+        buffer = readFileSync(imagePath);
+      } else if (process.platform === "darwin") {
+        const out = path.join(tmpdir(), `codex-web-icon-${nativeImageCache.size}.png`);
+        execFileSync("sips", ["-s", "format", "png", "-Z", "128", imagePath, "--out", out], { stdio: "ignore" });
+        buffer = readFileSync(out);
+      }
+    }
+  } catch {
+    buffer = null;
+  }
+  nativeImageCache.set(imagePath, buffer);
+  return buffer;
+}
+
+function createNativeImageStub(label: string, buffer: Buffer | null): Record<string, unknown> {
+  const image: Record<string, unknown> = {
+    isEmpty: () => buffer == null || buffer.length === 0,
+    toPNG: () => buffer ?? Buffer.alloc(0),
+    toDataURL: () => (buffer ? `data:image/png;base64,${buffer.toString("base64")}` : ""),
+    getSize: () => (buffer ? { width: 128, height: 128 } : { width: 0, height: 0 }),
+    getAspectRatio: () => 1,
+    isTemplateImage: () => false,
+    setTemplateImage: () => undefined,
+    addRepresentation: () => undefined,
+  };
+  image.resize = () => image;
+  image.crop = () => image;
+  return new Proxy(image, {
+    get(target, prop) {
+      if (prop in target) return target[prop as string];
+      if (typeof prop === "symbol") return undefined;
+      return createDeepStub(`${label}.${prop}`);
+    },
+  });
+}
+
+const nativeImage = {
+  createEmpty(): Record<string, unknown> {
+    log("nativeImage.createEmpty", []);
+    return createNativeImageStub("nativeImage(empty)", null);
+  },
+  createFromPath(imagePath: string): Record<string, unknown> {
     log("nativeImage.createFromPath", [imagePath]);
-    return {
-      isEmpty: () => !imagePath,
-    };
+    return createNativeImageStub(`nativeImage(${imagePath})`, loadImageFile(imagePath));
+  },
+  createFromBuffer(buffer: Buffer): Record<string, unknown> {
+    return createNativeImageStub("nativeImage(buffer)", buffer ?? null);
+  },
+  createFromDataURL(dataUrl: string): Record<string, unknown> {
+    const match = /^data:[^;]+;base64,(.*)$/.exec(dataUrl ?? "");
+    return createNativeImageStub("nativeImage(dataURL)", match ? Buffer.from(match[1]!, "base64") : null);
   },
 };
 const powerMonitor = {
@@ -875,6 +1136,9 @@ const powerSaveBlocker = {
 };
 const screen = {
   ...createEmitterStub("screen"),
+  isCursorScreenPointSupported(): boolean {
+    return false;
+  },
   getAllDisplays(): Array<{
     id: number;
     scaleFactor: number;
@@ -947,8 +1211,10 @@ function createSessionStub(label: string): {
   protocol: typeof protocol;
   removeListener: (event: string, listener: StubListener) => unknown;
   setPermissionCheckHandler: (...args: unknown[]) => void;
+  setPermissionPromptHandler: (...args: unknown[]) => void;
   setPermissionRequestHandler: (...args: unknown[]) => void;
   setPreferredLanguages: (languages: string[]) => void;
+  setWebsiteReportingEnabled: (enabled: boolean) => void;
   webRequest: {
     onBeforeRequest: (...args: unknown[]) => void;
     onBeforeSendHeaders: (...args: unknown[]) => void;
@@ -988,7 +1254,7 @@ function createSessionStub(label: string): {
     },
     getUserAgent(): string {
       log(`${label}.getUserAgent`, []);
-      return "Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36";
+      return electronUserAgent();
     },
     off: emitter.off,
     on: emitter.on,
@@ -998,11 +1264,17 @@ function createSessionStub(label: string): {
     setPermissionCheckHandler(...args: unknown[]): void {
       log(`${label}.setPermissionCheckHandler`, args);
     },
+    setPermissionPromptHandler(...args: unknown[]): void {
+      log(`${label}.setPermissionPromptHandler`, args);
+    },
     setPermissionRequestHandler(...args: unknown[]): void {
       log(`${label}.setPermissionRequestHandler`, args);
     },
     setPreferredLanguages(languages: string[]): void {
       log(`${label}.setPreferredLanguages`, [languages]);
+    },
+    setWebsiteReportingEnabled(enabled: boolean): void {
+      log(`${label}.setWebsiteReportingEnabled`, [enabled]);
     },
     webRequest: {
       onBeforeRequest(...args: unknown[]): void {
@@ -1076,6 +1348,7 @@ const electronModule = new Proxy(
     protocol,
     screen,
     session,
+    systemPreferences,
     Tray,
     utilityProcess,
     WebContentsView,
@@ -1111,6 +1384,7 @@ export {
   protocol,
   screen,
   session,
+  systemPreferences,
   Tray,
   utilityProcess,
   WebContentsView,

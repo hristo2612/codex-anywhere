@@ -1,0 +1,16 @@
+--- a/webview/assets/app-shared-36eae88777f2.js
++++ b/webview/assets/app-shared-36eae88777f2.js
+@@ -184957,7 +184957,12 @@
+         }),
+         l = i.watch(({ get: e }) => {
+           let t = e(n, i.key);
+-          o || Object.is(t, s) || ((s = t), HI(a, t));
++          // Another mount of this atom may apply a host update first; only
++          // persist values that differ from the stored one, or the host echo
++          // of each write starts a write loop.
++          o ||
++            Object.is(t, s) ||
++            ((s = t), Object.is(t, VI(a, void 0)) || HI(a, t));
+         });
+       return () => {
+         (c(), l());

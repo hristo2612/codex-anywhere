@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Restart the codex-anywhere server. It always runs under the LaunchAgent
+# (scripts/install-launchd), so there is exactly one backend; installing the
+# agent starts it the first time.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+LABEL="${CODEX_ANYWHERE_LABEL:-local.codex-anywhere}"
+if [[ ! -f "$HOME/Library/LaunchAgents/$LABEL.plist" ]]; then
+  exec ./scripts/install-launchd
+fi
+launchctl kickstart -k "gui/$(id -u)/$LABEL"
+echo "restarted $LABEL"

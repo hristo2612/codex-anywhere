@@ -1,5 +1,5 @@
 {
-  "name": "codex-web",
+  "name": "codex-anywhere",
   "version": "0.0.1",
   "files": [
     "README.md",
@@ -10,18 +10,20 @@
   ],
   "bin": "src/server/main.js",
   "scripts": {
-    "prepare": "./scripts/prepare && npm run build:browser && npm run build:server",
-    "build": "npm run prepare:asar && npm run build:browser && npm run build:server",
+    "prepare": "./scripts/prepare && npm run build:browser && npm run build:webview-dist && npm run build:server",
+    "build": "npm run prepare:asar && npm run build:browser && npm run build:webview-dist && npm run build:server",
     "launch:unpacked:server": "http-server ./scratch/asar/webview -a localhost -p 5175 -c-1",
     "launch:unpacked": "NODE_ENV=development electron ./scratch/asar --remote-debugging-port=9222",
     "dev:browser": "vite --config vite.browser.config.ts",
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:server": "cd src/server && tsc",
     "prepare:asar": "./scripts/prepare_asar",
-    "preserver": "npm run build:server && npm run build:browser",
-    "server": "CODEX_CLI_PATH=$(which codex) node src/server/main.js"
+    "preserver": "npm run build:server && npm run build:browser && npm run build:webview-dist",
+    "server": "CODEX_CLI_PATH=$(which codex) node src/server/main.js",
+    "build:webview-dist": "node scripts/optimize_webview.mjs",
+    "test:auth": "npm run build:server && node --test test/device-auth.test.mjs test/plugin-sandbox.test.mjs test/device-gate-server.test.mjs"
   },
-  "repository": "git@github.com:0xcaff/codex-web.git",
+  "repository": "github:hristo2612/codex-anywhere",
   "author": "martin <martincharles07@gmail.com>",
   "license": "MIT",
   "dependencies": {
@@ -45,6 +47,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "electron": "41.2.0",
+    "esbuild": "0.28.2",
     "http-server": "^14.1.1"
   }
 }

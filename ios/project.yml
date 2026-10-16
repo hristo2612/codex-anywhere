@@ -1,0 +1,32 @@
+name: CodexAnywhere
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 153.0.0
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  CodexAnywhere:
+    type: application
+    platform: iOS
+    sources:
+      - path: CodexAnywhere
+    dependencies:
+      - package: WebRTC
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
+        ENABLE_PREVIEWS: NO
+        INFOPLIST_FILE: CodexAnywhere/Info.plist

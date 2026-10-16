@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Keep codex-anywhere running across reboots and crashes (per-user LaunchAgent).
+# launchd cannot open files on an external volume (the repo may live on one), so
+# the job starts node directly, and its working directory and log stay internal.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+LABEL="${CODEX_ANYWHERE_LABEL:-local.codex-anywhere}"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOGDIR="$HOME/Library/Logs/codex-anywhere"
+NODE="$(command -v node)"
+mkdir -p "$LOGDIR" "$HOME/Library/LaunchAgents"
+# launchd does not inherit this shell, so settings set now go into the plist.
+ENV_XML=""
+for name in PORT CODEX_CLI_PATH CODEX_ANYWHERE_LOG_MAX_BYTES CODEX_ANYWHERE_DURABLE_HOST CODEX_ANYWHERE_ALLOWED_ORIGINS CODEX_ANYWHERE_HTTPS; do
+  value="${!name:-}"
+  [[ -n "$value" ]] || continue
+  value="${value//&/&amp;}"; value="${value//</&lt;}"; value="${value//>/&gt;}"
+  ENV_XML+="<key>$name</key><string>$value</string>"
+done
+cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array><string>$NODE</string><string>$PWD/scripts/launchd-entry.cjs</string></array>
+  <key>WorkingDirectory</key><string>$HOME</string>
+  <key>EnvironmentVariables</key><dict>$ENV_XML</dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$LOGDIR/server.log</string>
+  <key>StandardErrorPath</key><string>$LOGDIR/server.log</string>
+</dict>
+</plist>
+PLIST
+# Stop a manually started server so the port is free.
+if [[ -f logs/server.pid ]] && kill -0 "$(cat logs/server.pid)" 2>/dev/null; then
+  kill "$(cat logs/server.pid)"; sleep 2; rm -f logs/server.pid
+fi
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# bootstrap can fail briefly while the old job is still being torn down.
+for attempt in 1 2 3 4 5; do
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" && break
+  [[ $attempt -lt 5 ]] || exit 1
+  sleep 2
+done
+echo "installed $PLIST (log: $LOGDIR/server.log)"

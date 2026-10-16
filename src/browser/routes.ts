@@ -23,6 +23,13 @@ export function mapBrowserPathToInitialRoute(pathname: string, search: string) {
 }
 
 function mapBrowserPathToRoute(pathname: string): string {
+  // /app/<server>/<tool> deep-links a plugin sidebar page, e.g. a home-screen
+  // bookmark for Mission Control.
+  const app = pathname.match(/^\/app\/([^?#]+)$/);
+  if (app) {
+    return `/mcp-app/${app[1]}`;
+  }
+
   const match = pathname.match(/^\/thread\/([^/]+)$/);
   if (match) {
     try {
@@ -38,6 +45,13 @@ function mapBrowserPathToRoute(pathname: string): string {
 export function mapMemoryPathToBrowserPath(pathname: string) {
   if (pathname === "/") {
     return { path: "/", titleChange: "Codex" };
+  }
+
+  // Plugin sidebar pages (MCP App global entrypoints): /mcp-app/<server>/<tool>
+  // and /mcp-app/plugins/<pluginId>/<tool>.
+  const app = pathname.match(/^\/mcp-app\/([^?#]+)$/);
+  if (app) {
+    return { path: `/app/${app[1]}` };
   }
 
   const match = pathname.match(/^\/local\/([^/?#]+)$/);

@@ -1,0 +1,8 @@
+// Copy to Local.xcconfig (gitignored) and fill in.
+DEVELOPMENT_TEAM = ABCDE12345
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.codexanywhere
+// xcconfig treats "//" as a comment, so write the URL's slashes as /$()/.
+CODEX_ANYWHERE_SERVER_URL = https:/$()/your-mac.your-tailnet.ts.net:8200/
+// Optional: your own home-screen name, or an icon set you keep out of git.
+// APP_DISPLAY_NAME = Codex
+// ASSETCATALOG_COMPILER_APPICON_NAME = AppIconLocal

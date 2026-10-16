@@ -30,12 +30,12 @@ export default defineConfig({
     port: 4173,
     proxy: {
       "/__backend/ipc": {
-        target: `ws://127.0.0.1:8214`,
+        target: `ws://127.0.0.1:8200`,
         changeOrigin: true,
         ws: true,
       },
       "/__backend/upload": {
-        target: `http://127.0.0.1:8214`,
+        target: `http://127.0.0.1:8200`,
         changeOrigin: true,
       },
     },

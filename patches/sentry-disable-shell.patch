@@ -1,20 +1,20 @@
+--- a/.vite/build/bootstrap-CzzsHphT.js
++++ b/.vite/build/bootstrap-CzzsHphT.js
+@@ -17316,6 +17316,7 @@
+   r && (s = +!!o);
+   let c = me(n.version);
+   (sS({
++    enabled: !1,
+     ipcMode: xy.Classic,
+     dsn: LS.dsn,
+     transport: Ix(jS(t)),
 --- a/.vite/build/worker.js
 +++ b/.vite/build/worker.js
-@@ -96340,6 +96340,7 @@
-   let n = zR(e.appVersion),
-     r = e.buildFlavor !== `prod`;
-   (Lse({
+@@ -113582,6 +113582,7 @@
+   let r = uF(e.appVersion),
+     i = e.buildFlavor !== `prod`;
+   (rx({
 +    enabled: !1,
      dsn: e.dsn,
-     environment: e.buildFlavor,
-     release: NH(n.version),
---- a/.vite/build/window-all-closed-KNH8jchn.js
-+++ b/.vite/build/window-all-closed-KNH8jchn.js
-@@ -22081,6 +22081,7 @@
-   let c = he(e.version);
-   return (
-     dS({
-+      enabled: !1,
-       dsn: DC.dsn,
-       environment: DC.buildFlavor,
-       release: c,
+     transport: (e) => {
+       let t = uu(e.bufferSize ?? 64);

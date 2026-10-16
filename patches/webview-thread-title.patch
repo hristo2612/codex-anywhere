@@ -1,14 +1,14 @@
---- a/webview/assets/local-conversation-thread-9a0a61c5e076.js
-+++ b/webview/assets/local-conversation-thread-9a0a61c5e076.js
-@@ -21525,6 +21525,11 @@
-       startedAtMs: y?.submittedAtMs ?? null,
-     }));
-   b.conversationId === e && b.startedAtMs;
-+  let codexHostedWindowTitle = Z(Lt, { hostId: n, threadId: e });
-+  (0, YO.useEffect)(() => {
+--- a/webview/assets/local-conversation-thread-8d31f61b9a01.js
++++ b/webview/assets/local-conversation-thread-8d31f61b9a01.js
+@@ -22711,6 +22711,11 @@
+     startedAtMs: A?.submittedAtMs ?? null,
+   }));
+   M.conversationId === t && M.startedAtMs;
++  let codexHostedWindowTitle = Y(Ar, { hostId: a, threadId: t });
++  (0, cM.useEffect)(() => {
 +    let title = codexHostedWindowTitle?.trim();
 +    title && (document.title = `${title} | Codex`);
 +  }, [codexHostedWindowTitle]);
-   let x = no(pd),
-     S = Z(vr, e),
-     C = Ml(us).value,
+   let N = Z(ja),
+     P = Y(dm, t),
+     F = zr(vp).value,

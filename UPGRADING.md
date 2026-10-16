@@ -88,11 +88,19 @@ to validate the server, run the following
 nix develop --command yarn server
 ```
 
-next validate the client by opening a browser window to `http://localhost:8214`
+next validate the client by opening a browser window to `http://localhost:8200`
 and validating things show up on the page.
 
 look in the console for errors. also, look on the screen to see whether any
-error dialogs popped up. sometimes errors occur, but they're silent and exhibit
+error dialogs popped up.
+
+plugin pages: rerun `node scripts/mirror_mcp_sandbox.mjs` so the sandbox
+shell matches the new app version, and port
+`patches/webview-mcp-app-sandbox.patch` like the others (it anchors on
+minified names; the stable literals nearby are `unsafeSkipTargetOriginCheck`,
+`web-sandbox.oaiusercontent.com` and the `webview` tag next to
+`mcpAppInlineSurface`). then open a local plugin's sidebar page and look for
+`mcp_app_sandbox.widget_running` in the server log. sometimes errors occur, but they're silent and exhibit
 as loading taking forever (more than 1m). look out for that case too.
 
 if there are errors, bring them to the users attention and we will decide how to

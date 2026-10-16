@@ -522,6 +522,12 @@ function ensureHost(): HTMLElement {
   if (!element) {
     element = document.createElement("div");
     element.id = DIALOG_ID;
+    // The picker can open on top of an app modal (e.g. "Create project").
+    // Keep that modal from treating picker interaction as an outside click.
+    element.style.pointerEvents = "auto";
+    for (const type of ["pointerdown", "mousedown", "focusin"]) {
+      element.addEventListener(type, (event) => event.stopPropagation());
+    }
     document.body.append(element);
   }
   return element;

@@ -1,0 +1,52 @@
+--- a/webview/assets/app-shared-36eae88777f2.js
++++ b/webview/assets/app-shared-36eae88777f2.js
+@@ -105867,6 +105867,21 @@
+   return `${t ? `persist:` : ``}${jpt}:${e}`;
+ }
+ function Tpt({ locale: e, scheme: t = `https`, subdomain: n }) {
++  // codex-anywhere: MCP App sandboxes (mcp-app-* subdomains) load our own
++  // copy of the shell on the shim's origin; other sandboxes are left alone.
++  let sandboxOrigin = window.__ELECTRON_SHIM__?.mcpAppSandboxOrigin;
++  if (sandboxOrigin && n.startsWith(`mcp-app-`)) {
++    let r = new URL(`${sandboxOrigin}/`);
++    return (
++      r.searchParams.set(`app`, `skybridge`),
++      r.searchParams.set(`locale`, e),
++      r.searchParams.set(`deviceType`, `desktop`),
++      r.searchParams.set(`unsafeSkipTargetOriginCheck`, `true`),
++      r.searchParams.set(`backgroundMode`, `transparent`),
++      r.searchParams.set(`sandboxSubdomain`, n),
++      r.toString()
++    );
++  }
+   let r = new URL(`${t}://${Ipt}`);
+   return (
+     (r.hostname = `${n}.${r.hostname}`),
+@@ -105909,6 +105924,14 @@
+ }
+ function Apt(e) {
+   let t = kpt(e);
++  if (
++    t != null &&
++    window.__ELECTRON_SHIM__?.mcpAppSandboxOrigin != null &&
++    t.origin === window.__ELECTRON_SHIM__.mcpAppSandboxOrigin &&
++    t.username === `` &&
++    t.password === ``
++  )
++    return t;
+   return t == null ||
+     (t.protocol !== `https:` && t.protocol !== `codex-sandbox:`) ||
+     t.port !== `` ||
+--- a/webview/assets/widget-e94e1bb1c0dd.js
++++ b/webview/assets/widget-e94e1bb1c0dd.js
+@@ -3307,7 +3307,9 @@
+     tr = v?.isConnected === !0 ? v : null,
+     nr = tr != null || er != null,
+     rr = !H && !s && v?.dataset.mcpAppInlineSurface === `card`,
+-    ir = `webview`,
++    // codex-anywhere: browsers have no <webview>; MCP App pages render in an
++    // <iframe> on our own sandbox origin (see src/browser/shim.ts).
++    ir = window.__ELECTRON_SHIM__?.mcpAppSandboxOrigin ? `iframe` : `webview`,
+     ar = typeof W?.moveBefore == `function`,
+     or = !H && ((!s && c) || tr?.closest(`.thread-scroll-container`) != null),
+     sr = y && !or && (ar || !f),

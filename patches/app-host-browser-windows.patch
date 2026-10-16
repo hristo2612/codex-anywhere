@@ -1,29 +1,30 @@
---- a/.vite/build/main-C5K7o1Hr.js
-+++ b/.vite/build/main-C5K7o1Hr.js
-@@ -130136,28 +130136,22 @@
+--- a/.vite/build/main-C5425b_s.js
++++ b/.vite/build/main-C5425b_s.js
+@@ -176459,29 +176459,23 @@
          }));
      }
      async whenReady() {
 +      // Browser tabs are independent renderers. Opening another tab must not
 +      // cancel startup for an existing tab when the primary window changes.
+       let e;
        if (this.startupReady != null) {
-         let e = Promise.withResolvers(),
-           t = () => {
--            e.reject(
+         let t = Promise.withResolvers(),
+           n = () => {
+-            t.reject(
 -              new DOMException(`Primary renderer was replaced`, `AbortError`),
 -            );
 -          },
--          n = this.windowManager.subscribePrimaryWindowChanges((e) => {
--            e?.webContents.id !== this.origin.id && t();
+-          r = this.windowManager.subscribePrimaryWindowChanges((e) => {
+-            e?.webContents.id !== this.origin.id && n();
 -          });
-+            e.reject(new DOMException(`Renderer was destroyed`, `AbortError`));
++            t.reject(new DOMException(`Renderer was destroyed`, `AbortError`));
 +          };
-         this.origin.once(`destroyed`, t);
+         this.origin.once(`destroyed`, n);
          try {
-           await Promise.race([this.startupReady, e.promise]);
+           e = await Promise.race([this.startupReady, t.promise]);
          } finally {
--          (n(), this.origin.off(`destroyed`, t));
-+          this.origin.off(`destroyed`, t);
+-          (r(), this.origin.off(`destroyed`, n));
++          this.origin.off(`destroyed`, n);
          }
        }
 -      if (
@@ -33,16 +34,16 @@
 -        throw new DOMException(`Primary renderer was replaced`, `AbortError`);
 +      if (this.origin.isDestroyed())
 +        throw new DOMException(`Renderer was destroyed`, `AbortError`);
+       return this.includeStartupTiming ? e : void 0;
      }
-     reach(e) {
-       if (
-@@ -151649,6 +151643,9 @@
-     updateDockIcon: ee,
+     isSentryEnabled() {
+@@ -201871,6 +201865,9 @@
+     updateDockIcon: R,
      setWindowContext: (e) => {
-       L = e;
+       z = e;
 +      globalThis.__codexElectronIpcBridge?.setRendererWindowFactory(() =>
-+        R.createPrimaryWindow({ show: !1 }),
++        B.createPrimaryWindow({ show: !1 }),
 +      );
-       for (let t of l.BrowserWindow.getAllWindows())
-         t.isDestroyed() || !R.isAppServiceWindow(t) || e.registerWindow(t);
+       for (let t of p.BrowserWindow.getAllWindows())
+         !t.isDestroyed() && B.isAppServiceWindow(t) && e.registerWindow(t);
      },

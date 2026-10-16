@@ -1,0 +1,16 @@
+--- a/webview/assets/app-initial-d817715f10a0.js
++++ b/webview/assets/app-initial-d817715f10a0.js
+@@ -55040,6 +55040,13 @@
+           handler: (e, t) => {
+             let { nativeEvent: n } = e,
+               { onActivation: r } = t;
++            // codex-web: on phones a finger swipe scrolls; it never starts a
++            // drag (sidebar reorder etc.). A mouse or trackpad still drags.
++            if (
++              n.pointerType === `touch` &&
++              window.matchMedia(`(max-width: 767.98px)`).matches
++            )
++              return !1;
+             return !n.isPrimary || n.button !== 0
+               ? !1
+               : (r?.({ event: n }), !0);

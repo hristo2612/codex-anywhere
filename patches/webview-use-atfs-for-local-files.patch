@@ -1,11 +1,11 @@
---- a/webview/assets/app-initial-236e1501144c.js
-+++ b/webview/assets/app-initial-236e1501144c.js
-@@ -237112,7 +237112,7 @@
-     (X(), (yIr = `${nTt}@${s_}`), (bIr = `com.apple.MobileSMS`));
-   });
- function SIr(e) {
--  return `${TIr}${wIr(e)}`;
-+  return wIr(e);
+--- a/webview/assets/app-shared-36eae88777f2.js
++++ b/webview/assets/app-shared-36eae88777f2.js
+@@ -246014,7 +246014,7 @@
+   }))();
  }
- function CIr(e) {
-   return wIr(e);
+ function cDr(e) {
+-  return `${dDr}${uDr(e)}`;
++  return uDr(e);
+ }
+ function lDr(e) {
+   return uDr(e);

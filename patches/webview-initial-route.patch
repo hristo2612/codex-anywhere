@@ -1,29 +1,37 @@
---- a/webview/assets/app-initial-236e1501144c.js
-+++ b/webview/assets/app-initial-236e1501144c.js
-@@ -172745,11 +172745,16 @@
-   useTransitions: i,
- }) {
-   let a = dT.useRef();
--  a.current ??= F_n({ initialEntries: n, initialIndex: r, v5Compat: !0 });
-+  a.current ??= F_n({
-+    initialEntries: n ?? [window.__ELECTRON_SHIM__.initialRoute],
-+    initialIndex: r,
-+    v5Compat: !0,
-+  });
-   let o = a.current,
-     [s, c] = dT.useState({ action: o.action, location: o.location }),
-     l = dT.useCallback(
-       (e) => {
-+        window.__ELECTRON_SHIM__.onMemoryNavigationChanged(e);
-         i === !1 ? c(e) : dT.startTransition(() => c(e));
-       },
-       [i],
-@@ -200768,7 +200773,7 @@
-   return RT(f0n, void 0) !== void 0;
+--- a/webview/assets/app-initial-d817715f10a0.js
++++ b/webview/assets/app-initial-d817715f10a0.js
+@@ -40631,7 +40631,7 @@
+   return ml(get, void 0) !== void 0;
  }
- function s0n() {
+ function uet() {
 -  return !0;
 +  return window.__ELECTRON_SHIM__.initialSidebarState;
  }
- function c0n() {
-   return RT(f0n, !1);
+ function det() {
+   return !0;
+@@ -230075,10 +230075,21 @@
+     i;
+   t[0] === r
+     ? (i = t[1])
+-    : ((i = () =>
+-        Tfe([{ path: `*`, Component: nii, ErrorBoundary: rii }], {
+-          initialEntries: r,
+-        })),
++    : ((i = () => {
++        let router = Tfe([{ path: `*`, Component: nii, ErrorBoundary: rii }], {
++            initialEntries: r ?? [window.__ELECTRON_SHIM__.initialRoute],
++          }),
++          lastLocation = router.state.location;
++        router.subscribe((state) => {
++          state.location !== lastLocation &&
++            ((lastLocation = state.location),
++            window.__ELECTRON_SHIM__.onMemoryNavigationChanged({
++              action: state.historyAction,
++              location: state.location,
++            }));
++        });
++        return router;
++      }),
+       (t[0] = r),
+       (t[1] = i));
+   let [a] = (0, aii.useState)(i),

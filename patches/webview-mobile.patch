@@ -1,0 +1,101 @@
+--- a/webview/index.html
++++ b/webview/index.html
+@@ -6,7 +6,10 @@
+     <base href="/" />
+     <script type="module" src="./assets/preload.js"></script>
+     <meta charset="UTF-8" />
+-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <meta
++      name="viewport"
++      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
++    />
+     <title>ChatGPT</title>
+     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+     <link rel="manifest" href="/manifest.json" />
+@@ -140,6 +143,86 @@
+         --spacing-token-safe-header-left: 0px;
+       }
+     </style>
++    <style>
++      /* iOS safe areas (all zero unless viewport-fit=cover applies). */
++      #root {
++        box-sizing: border-box;
++        padding: env(safe-area-inset-top) env(safe-area-inset-right)
++          env(safe-area-inset-bottom) env(safe-area-inset-left);
++      }
++      header[data-app-shell-titlebar] {
++        top: env(safe-area-inset-top) !important;
++        left: env(safe-area-inset-left) !important;
++        right: env(safe-area-inset-right) !important;
++      }
++      /* The app shell sizes itself to 100dvh; inside the padded #root it
++         must fill the remaining height instead, or it overflows by the
++         top inset and pushes the composer under the home indicator. */
++      #root > [class*="_PageSurface"] {
++        height: 100% !important;
++        min-height: 0 !important;
++      }
++
++      /* Phone widths, same breakpoint as the app shell (< 768px). */
++      @media (max-width: 767.98px) {
++        /* An open sidebar is a full-screen page: take the whole width and
++           hide the main panel, keeping only the header's sidebar toggle. */
++        [data-app-shell-frame][data-app-shell-sidebar-open="true"]
++          aside.app-shell-left-panel {
++          width: 100% !important;
++          flex: 0 0 100%;
++        }
++        [data-app-shell-frame][data-app-shell-sidebar-open="true"]
++          aside.app-shell-left-panel
++          > div
++          > div[style*="width"] {
++          width: 100% !important;
++          min-width: 0 !important;
++        }
++        [data-app-shell-frame][data-app-shell-sidebar-open="true"]
++          main[data-app-shell-main-surface] {
++          flex: 0 0 0 !important;
++          width: 0 !important;
++          min-width: 0 !important;
++          border: 0 !important;
++        }
++        [data-app-shell-frame][data-app-shell-sidebar-open="true"]
++          main[data-app-shell-main-surface]
++          > :not(header),
++        [data-app-shell-frame][data-app-shell-sidebar-open="true"]
++          header[data-app-shell-titlebar]
++          > :not([data-app-shell-header-slot="start"]) {
++          display: none !important;
++        }
++
++        /* Smaller, balanced empty-state heading. */
++        .heading-xl {
++          font-size: 22px;
++          line-height: 28px;
++          text-wrap: balance;
++        }
++
++        /* Give the thread title room: icon-only Share, no terminal toggle. */
++        header[data-app-shell-titlebar] button[aria-label="Share"] {
++          font-size: 0;
++          gap: 0;
++        }
++        header[data-app-shell-titlebar]
++          button[aria-label="Toggle bottom panel"] {
++          display: none;
++        }
++      }
++
++      /* iOS Safari zooms into fields with font-size under 16px on focus. */
++      @media (max-width: 767.98px) {
++        .ProseMirror,
++        input,
++        textarea,
++        select {
++          font-size: 16px !important;
++        }
++      }
++    </style>
+     <script
+       type="module"
+       crossorigin

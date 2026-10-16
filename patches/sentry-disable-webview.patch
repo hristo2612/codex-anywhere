@@ -1,10 +1,10 @@
---- a/webview/assets/app-initial-236e1501144c.js
-+++ b/webview/assets/app-initial-236e1501144c.js
-@@ -357239,6 +357239,7 @@
-     n = JSt(e.appVersion),
+--- a/webview/assets/app-initial-d817715f10a0.js
++++ b/webview/assets/app-initial-d817715f10a0.js
+@@ -51985,6 +51985,7 @@
+     n = bIe(e.appVersion),
      r = e.buildFlavor !== `prod`;
-   (FBa({
+   (igt({
 +    enabled: !1,
-     beforeBreadcrumb: fIt,
-     beforeSend: $Sn,
+     beforeBreadcrumb: dMe,
+     beforeSend: IDe,
      dsn: e.dsn,

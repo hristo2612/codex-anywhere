@@ -1,3 +1,18 @@
 node_modules/
 scratch*/
 sentry
+# codex-anywhere local runtime
+/bin/
+/logs/
+/com.openai.codex/
+/browser-sidebar-page-states.json
+/src/server/**/*.js
+/src/server/**/*.js.map
+/src/server/**/*.d.ts
+/src/server/**/*.d.ts.map
+/ios/**/xcuserdata/
+/ios/build/
+/statsig-state.json*
+/ios/Config/Local.xcconfig
+/artifact-sessions/
+/ios/CodexAnywhere/Assets.xcassets/AppIconLocal.appiconset/

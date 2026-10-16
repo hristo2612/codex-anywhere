@@ -1,0 +1,47 @@
+--- a/.vite/build/main-C5425b_s.js
++++ b/.vite/build/main-C5425b_s.js
+@@ -82632,10 +82632,9 @@
+           })));
+     }
+     async getState() {
+-      let e = await this.getService();
+-      e.start();
+-      let t = e.getState();
+-      return (this.syncSessionLockMonitor(t), t);
++      // codex-web: no Codex Micro keypad on a headless host; loading the
++      // service only retried a missing native HID addon every 30 s.
++      return this.deviceState;
+     }
+     async stop() {
+       (this.resetLifecycleTracking(),
+@@ -82648,7 +82647,7 @@
+         (this.singleTapAgentKeys = n));
+     }
+     async updateLighting(e) {
+-      return (await this.getService()).updateLighting(e);
++      return !1;
+     }
+     dispose() {
+       if (
+@@ -183392,11 +183391,16 @@
+           void 0,
+           t,
+         )),
+-        (this.durableThreadHostConfig = $T({
+-          desktopOriginator: e.desktopOriginator,
+-          devApiBaseUrl: e.devApiBaseUrl,
+-          prodApiBaseUrl: e.prodApiBaseUrl,
+-        })),
++        // codex-web: the durable (cloud) thread host answers 403 unless the
++        // account has it and then reconnects every 20 s; opt in to use it.
++        (this.durableThreadHostConfig =
++          process.env.CODEX_ANYWHERE_DURABLE_HOST !== `1`
++            ? null
++            : $T({
++                desktopOriginator: e.desktopOriginator,
++                devApiBaseUrl: e.devApiBaseUrl,
++                prodApiBaseUrl: e.prodApiBaseUrl,
++              })),
+         (this.sharedObjectRepository = new Kee()),
+         this.sharedObjectRepository.set(`host_config`, l.r),
+         this.sharedObjectRepository.set(
